@@ -46,14 +46,6 @@ contract Staking is Ownable {
     Counters.Counter private _stakePackageCount;
     mapping(uint256 => StakePackage) public stakePackages;
     mapping(address => mapping(uint256 => StakingInfo)) public stakes;
-    event StakeAdded(
-        uint256 indexed stackeId,
-        uint256 rate_,
-        uint256 decimal_,
-        uint256 minStaking_,
-        uint256 lockTime_    
-    );
-    event StakeRemoved (uint256 indexed stackeId);
 
     /**
      * @dev Initialize
@@ -63,6 +55,12 @@ contract Staking is Ownable {
      */
     constructor(address tokenAddr_, address reserveAddress_) {
         gold = IERC20(tokenAddr_);
+    }
+    function setReserve(address reserveAddress_) public onlyOwner {
+        require(
+            reserveAddress_ != address(0),
+            "Staking: Invalid reserve address"
+        );
         reserve = StakingReserve(reserveAddress_);
     }
 
@@ -76,10 +74,10 @@ contract Staking is Ownable {
         uint256 minStaking_,
         uint256 lockTime_
     ) public onlyOwner {
-        // require(
-        //     reserve.ownerOf(reserve.stakeAddress) == _msgSender(),
-        //     "Staking: sender is not owner of token"
-        // );
+        require(rate_ > 0, "Staking: Stake rate has must greater than 0");
+        require(minStaking_ > 0, "Staking: Stake amount has must greater than 0");
+        require(lockTime_ > 0, "Staking: Stake has must greater than 0");
+        //require(msg.sender = o);check own
         uint256 _stakePackageID = _stakePackageCount.current();
         stakePackages[_stakePackageID] = StakePackage(
             rate_,
@@ -89,14 +87,6 @@ contract Staking is Ownable {
             false
         );
         _stakePackageCount.increment();
-        //reserve.transferOwnership(newOwner);
-        emit StakeAdded(
-            _stakePackageID,
-            rate_,
-            decimal_,
-            minStaking_,
-            lockTime_
-        );
     }
 
     /**
@@ -105,12 +95,13 @@ contract Staking is Ownable {
      * so none of new staker can stake to an offine stake package
      */
     function removeStakePackage(uint256 packageId_) public onlyOwner {
+        require(
+            packageId_ <= _stakePackageCount.current(), "Staking: package is not exist!"
+        );
         StakePackage storage _stakePackage = stakePackages[packageId_];
         
-        delete stakePackages[packageId_];
+        _stakePackage.isOffline = true;
 
-        //nftContract.transferFrom(address(this), _msgSender(), _tokenId);
-        emit StakeRemoved(packageId_);
     }
 
     /**
@@ -120,25 +111,28 @@ contract Staking is Ownable {
      * otherwise just add completely new stake. 
      */
     function stake(uint256 amount_, uint256 packageId_) external {
-        StakePackage storage _stakePackage = stakePackages[msg.sender];
-
-        require(msg.sender == stakeAddress);
-        require(_stakePackage.minStaking >= amount);
-        uint8 timepoint = 1;
-        if(stakes[msg.sender][packageId_].timepoint > 0)
-            timepoint = stakes[msg.sender][packageId_].timepoint +1;
+        StakingInfo storage _stakingInfo = stakes[_msgSender()][packageId_];
+        require(packageId_ <= _stakePackageCount.current(), "Staking: package is not exist!");
+        require(_stakePackage.minStaking <= amount);
+        require( stakePackages[packageId_].minStaking > 0,"Staking: Stake package is not exist!");
+        //uint8 timepoint = 1;
         gold.transferFrom(msg.sender, reserve.stakeAddress, amount_);
-        stakes[msg.sender][packageId_] = StakingInfo(
-            block.timestamp,
-            timepoint,
-            amount_,
-            (_stakePackage.rate * amount_) / 10**(_stakePackage.decimal + 2)
-        );
-        event StakeUpdate(
-            address account,
-            uint256 packageId,
-            uint256 amount,
-            uint256 totalProfit
+        if (_stakingInfo.amount > 0) {
+            uint256 _totalProfit = calculateProfit(packageId_);
+            _stakingInfo.totalProfit = _totalProfit;
+            _stakingInfo.amount += amount;
+            _stakingInfo.timePoint = block.timestamp;
+        } else {
+            _stakingInfo.totalProfit = 0;
+            _stakingInfo.amount += amount;
+            _stakingInfo.timePoint = block.timestamp;
+            _stakingInfo.startTime = block.timestamp;
+        }
+        emit StakeUpdate(
+            _msgSender(),
+            packageId_,
+            _stakingInfo.amount,
+            _stakingInfo.totalProfit
         );
     }
     /**
@@ -146,7 +140,16 @@ contract Staking is Ownable {
      */
     function unStake(uint256 packageId_) external {
         // validate available package and approved amount
-        
+        StakingInfo storage _stakingInfo = stakes[_msgSender()][packageId_];
+        require(packageId_ <= _stakePackageCount.current(), "Staking: package is not exist!");
+        uint256 _profit = calculateProfit(packageId_);
+        uint256 _stakeAmount = _stakingInfo.amount;
+        _stakingInfo.amount = 0;
+        _stakingInfo.startTime = 0;
+        _stakingInfo.timePoint = 0;
+        _stakingInfo.totalProfit = 0;
+        reserve.distributeGold(_msgSender(), _stakeAmount + _profit);
+        emit StakeReleased(msg.sender, packageId_, _stakeAmount, _profit);
     }
     /**
      * @dev calculate current profit of an package of user known packageId
@@ -157,8 +160,13 @@ contract Staking is Ownable {
         view
         returns (uint256)
     {
-        StakePackage storage _stakePackage = stakePackages[packageId_];
-        return (_stakePackage.rate * amount_) / 10**(_stakePackage.decimal + 2)
+        require(
+            packageId_ <= _stakePackageCount.current(), "Staking: package is not exist!"
+        );
+        StakingInfo memory _stakingInfo = stakes[_msgSender()][packageId_];
+        uint256 _stakeTime = block.timestamp - _stakingInfo.timePoint;
+        uint256 _profit = (_stakeTime * _stakingInfo.amount * stakePackages[packageId_].rate)/10**stakePackages[packageId_].decimal;
+        return _stakingInfo.totalProfit + _profit;
     }
 
     function getAprOfPackage(uint256 packageId_)
@@ -167,7 +175,6 @@ contract Staking is Ownable {
         returns (uint256)
     {
         StakePackage storage _stakePackage = stakePackages[packageId_];
-        
-        return ((_stakePackage.rate * amount_) / 10**(_stakePackage.decimal + 2))*12;
+        return ((_stakePackage.rate * amount_) / 10**(_stakePackage.decimal + 2))*365;
     }
 }
