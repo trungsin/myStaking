@@ -5,8 +5,6 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "../reserve/Reserve.sol";
 import "@openzeppelin/contracts/utils/Counters.sol";
-import "./SafeMath.sol";
-
 
 contract Staking is Ownable {
     using Counters for Counters.Counter;
