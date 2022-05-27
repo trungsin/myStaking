@@ -175,6 +175,6 @@ contract Staking is Ownable {
         returns (uint256)
     {
         StakePackage storage _stakePackage = stakePackages[packageId_];
-        return ((_stakePackage.rate * amount_) / 10**(_stakePackage.decimal + 2))*365;
+        return ((_stakePackage.rate * amount_) / 10**(_stakePackage.decimal + 2))*365*86400;
     }
 }
